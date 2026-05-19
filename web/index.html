@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ORA Arm Control</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/vendor/nipplejs.min.js" defer></script>
+    <script src="/Ora-move.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="control-surface" aria-label="ORA arm controls">
+        <header class="topbar">
+          <div>
+            <h1>ORA Arm Control</h1>
+            <p><span id="device-name"></span> at <span id="ip-display"></span></p>
+            <p class="transport-note">The Ozobot Editor connection works through its own WebRTC/BLE bridge. Direct local HTTP is not available yet.</p>
+          </div>
+          <div class="status-panel">
+            <span id="status-dot" class="status-dot status-dot-disconnected"></span>
+            <span id="conn-text" class="status-disconnected">Offline</span>
+            <button id="connect-btn" type="button">Check</button>
+          </div>
+        </header>
+
+        <div class="workspace">
+          <div class="joystick-panel">
+            <div id="joystick-zone" aria-label="XY joystick"></div>
+            <div class="readout">
+              <span>X <strong id="val-x">0.00</strong></span>
+              <span>Y <strong id="val-y">0.00</strong></span>
+              <span>Last <strong id="last-command">idle</strong></span>
+            </div>
+          </div>
+
+          <canvas id="arm-preview" width="360" height="300" aria-label="Arm movement preview"></canvas>
+
+          <div class="action-grid">
+            <button id="stop-btn" class="danger" type="button">Emergency Stop</button>
+            <button id="ready-btn" type="button">Set Ready</button>
+            <button id="live-btn" class="live" type="button">Enable Live Control</button>
+            <button id="home-btn" type="button">Initial Position</button>
+            <button id="grip-btn" type="button">Close Gripper</button>
+            <button id="z-up-btn" type="button">Z Up</button>
+            <button id="z-down-btn" type="button">Z Down</button>
+            <a id="editor-link" class="button-link" href="https://editor.ozobot.com/en/blockly" target="_blank" rel="noreferrer">Open Editor</a>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

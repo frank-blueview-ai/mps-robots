@@ -1,0 +1,19 @@
+{
+  "name": "mps-robots",
+  "version": "1.0.0",
+  "description": "This project serves a local ORA arm control page through project-local NGINX.",
+  "main": "Ora-move.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:local": "playwright test tests/local-controller.spec.js",
+    "test:ora": "playwright test tests/official-editor-connection.spec.js",
+    "test:bridge": "playwright test tests/bridge-readonly.spec.js",
+    "bridge": "node scripts/ora-bridge-server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}

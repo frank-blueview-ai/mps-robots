@@ -1,0 +1,2 @@
+StrEnum==0.4.15; python_version < "3.11"
+ozobot-ora @ https://editor.ozobot.com/_next/static/media/ozobot_ora-1.0.6-92d7fe8529c7c554ec80535db5cd6b0d0c5997e9-py3-none-any.a6e018df.whl
