@@ -42,10 +42,12 @@ test.describe("ADK Harden E2E Tests", () => {
       mockBridgeServer.listen(bridgePort, "127.0.0.1", resolve);
     });
 
-    // 3. Start Go server with custom configuration
-    goServerProcess = spawn("go", [
-      "run",
-      "cmd/ora-server/main.go",
+    // 3. Build Go server first
+    const { execSync } = require("child_process");
+    execSync("go build -o ora-server.exe ./cmd/ora-server");
+
+    // 4. Start Go server with custom configuration
+    goServerProcess = spawn("./ora-server.exe", [
       "-addr", `127.0.0.1:${port}`,
       "-bridge-url", `http://127.0.0.1:${bridgePort}`,
       "-adk-arm-mode", "live",
@@ -60,30 +62,37 @@ test.describe("ADK Harden E2E Tests", () => {
         ADK_TEST_FAKE_AGENT: "true"
       }
     });
-
+ 
     // Wait for the server to be ready
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Go server start timeout")), 15000);
-      goServerProcess.stdout.on("data", (data) => {
+      const onData = (data) => {
         const text = data.toString();
         if (text.includes("listening on http://")) {
           clearTimeout(timeout);
           resolve();
         }
-      });
-      goServerProcess.stderr.on("data", (data) => {
-        console.error("[Go Server Err]", data.toString());
-      });
+      };
+      goServerProcess.stdout.on("data", onData);
+      goServerProcess.stderr.on("data", onData);
     });
   });
-
+ 
   test.afterAll(async () => {
     if (goServerProcess) {
       goServerProcess.kill();
     }
     if (mockBridgeServer) {
-      await new Promise((resolve) => mockBridgeServer.close(resolve));
+      if (typeof mockBridgeServer.closeAllConnections === "function") {
+        mockBridgeServer.closeAllConnections();
+      }
+      mockBridgeServer.close();
     }
+    // Give OS a moment to release file lock, then delete
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      fs.unlinkSync("ora-server.exe");
+    } catch (e) {}
   });
 
   test("1. Simulator view loads and displays safety warning", async ({ page }) => {
@@ -157,7 +166,7 @@ test.describe("ADK Harden E2E Tests", () => {
     const json = await res.json();
     
     expect(json.confirmationRequired).toBe(true);
-    expect(json.confirmationCallID).toBeDefined();
+    expect(json.confirmationCallId).toBeDefined();
 
     const wrongConfirm = await request.post(`http://localhost:${port}/api/agent/confirm`, {
       data: {
@@ -172,7 +181,7 @@ test.describe("ADK Harden E2E Tests", () => {
     const rightConfirm = await request.post(`http://localhost:${port}/api/agent/confirm`, {
       data: {
         sessionId: json.sessionId,
-        confirmationCallId: json.confirmationCallID,
+        confirmationCallId: json.confirmationCallId,
         confirmed: true
       }
     });

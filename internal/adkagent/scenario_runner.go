@@ -23,6 +23,18 @@ type AgentScenarioResult struct {
 }
 
 func RunAgentScenario(ctx context.Context, sc *robotsim.Scenario, m *Manager, sim *robotsim.Simulator) (*AgentScenarioResult, error) {
+	// Temporarily swap controller to simulator
+	m.mu.Lock()
+	origCtrl := m.controller
+	m.controller = sim
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.controller = origCtrl
+		m.mu.Unlock()
+	}()
+
 	// Set StepDelay to 0 to execute tests instantly
 	originalDelay := sim.StepDelay
 	sim.StepDelay = 0

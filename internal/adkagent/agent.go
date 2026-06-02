@@ -369,6 +369,8 @@ func (m *Manager) runFakeAgentTurn(ctx context.Context, sessionID string, conten
 					task = "unsafe"
 				} else if strings.Contains(txt, "home") || strings.Contains(txt, "recover") {
 					task = "home"
+				} else if strings.Contains(txt, "cartesian") || strings.Contains(txt, "x=150") {
+					task = "cartesian"
 				}
 				m.mu.Lock()
 				m.fakeAgentTasks[sessionID] = task
@@ -565,6 +567,15 @@ func (m *Manager) runFakeAgentTurn(ctx context.Context, sessionID string, conten
 				resp.AssistantText = "Done"
 				return resp, nil
 			}
+		case "cartesian":
+			x, y, z := 150.0, 0.0, 100.0
+			_, err := m.moveToSafePoseTool(tctx, robot.MovePoseArgs{X: &x, Y: &y, Z: &z})
+			if err != nil {
+				resp.Error = err.Error()
+				return resp, nil
+			}
+			resp.AssistantText = "Done"
+			return resp, nil
 		default:
 			return resp, fmt.Errorf("unknown fake agent task")
 		}
