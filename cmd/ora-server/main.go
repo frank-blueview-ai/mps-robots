@@ -43,6 +43,8 @@ type Config struct {
 	AdkGeminiModel         string
 	GeminiAPIKey           string
 	AdkArmMode             string
+	AdkAllowRawCartesian   bool
+	AdkTestFakeAgent       bool
 }
 
 type App struct {
@@ -145,6 +147,8 @@ func loadConfig() Config {
 	if adkArmModeStr == "" {
 		adkArmModeStr = "dry_run"
 	}
+	adkAllowRawStr := lookup("ADK_ALLOW_RAW_CARTESIAN")
+	adkFakeAgentStr := lookup("ADK_TEST_FAKE_AGENT")
 
 	cfg := Config{
 		Addr:                   firstNonEmpty(lookup("ORA_SERVER_ADDR"), "127.0.0.1:8081"),
@@ -157,6 +161,12 @@ func loadConfig() Config {
 		AdkGeminiModel:         firstNonEmpty(lookup("ADK_GEMINI_MODEL"), "gemini-2.5-flash"),
 		GeminiAPIKey:           firstNonEmpty(lookup("GEMINI_API_KEY"), lookup("GOOGLE_API_KEY")),
 		AdkArmMode:             adkArmModeStr,
+		AdkAllowRawCartesian:   strings.ToLower(adkAllowRawStr) == "true" || adkAllowRawStr == "1",
+		AdkTestFakeAgent:       strings.ToLower(adkFakeAgentStr) == "true" || adkFakeAgentStr == "1",
+	}
+
+	if cfg.AdkTestFakeAgent && cfg.GeminiAPIKey == "" {
+		cfg.GeminiAPIKey = "fake_key"
 	}
 
 	cfg.WebRoot = firstNonEmpty(lookup("ORA_WEB_ROOT"), defaultWebRoot(cfg.ProjectRoot))
@@ -175,6 +185,8 @@ func loadConfig() Config {
 	flag.BoolVar(&cfg.AdkRequireConfirmation, "adk-require-confirm", cfg.AdkRequireConfirmation, "Require confirmation for physical ADK motions")
 	flag.StringVar(&cfg.AdkGeminiModel, "adk-gemini-model", cfg.AdkGeminiModel, "Gemini model name for ADK agent")
 	flag.StringVar(&cfg.AdkArmMode, "adk-arm-mode", cfg.AdkArmMode, "Arm operation mode (dry_run, sim, live)")
+	flag.BoolVar(&cfg.AdkAllowRawCartesian, "adk-allow-raw-cartesian", cfg.AdkAllowRawCartesian, "Allow raw Cartesian movements in live mode")
+	flag.BoolVar(&cfg.AdkTestFakeAgent, "adk-test-fake-agent", cfg.AdkTestFakeAgent, "Enable deterministic fake agent mode for testing")
 	flag.Parse()
 
 	return cfg
@@ -224,6 +236,7 @@ func NewApp(cfg Config) (*App, error) {
 			GeminiAPIKey:        cfg.GeminiAPIKey,
 			ArmMode:             cfg.AdkArmMode,
 			Simulator:           sim,
+			AllowRawCartesian:   cfg.AdkAllowRawCartesian,
 		})
 		if err != nil {
 			log.Printf("warning: failed to initialize ADK Agent Manager: %v", err)
@@ -273,6 +286,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/sim/state", withCORS(a.simState))
 	mux.HandleFunc("/api/sim/reset", withCORS(a.simReset))
 	mux.HandleFunc("/api/sim/scenarios/run", withCORS(a.simRunScenario))
+	mux.HandleFunc("/api/sim/scenarios/run-agent", withCORS(a.simRunAgentScenario))
+	mux.HandleFunc("/sim/vendor/", withCORS(a.simVendor))
 
 	mux.HandleFunc("/", a.static)
 	return requestLog(mux)
@@ -1224,15 +1239,16 @@ func (a *App) simState(w http.ResponseWriter, r *http.Request) {
 	_, _, _, _, _, _, objects := a.sim.GetRawState()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"mode":         a.cfg.AdkArmMode,
-		"isReady":      state.IsReady,
-		"errorCode":    state.ErrorCode,
-		"errorMessage": state.ErrorMessage,
-		"tcpPose":      state.TCPPose,
-		"jointPose":    state.JointPose,
-		"gripperState": state.GripperState,
-		"objects":      objects,
-		"slots":        a.sim.Slots,
+		"mode":              a.cfg.AdkArmMode,
+		"isReady":           state.IsReady,
+		"errorCode":         state.ErrorCode,
+		"errorMessage":      state.ErrorMessage,
+		"tcpPose":           state.TCPPose,
+		"jointPose":         state.JointPose,
+		"gripperState":      state.GripperState,
+		"objects":           objects,
+		"slots":             a.sim.Slots,
+		"allowRawCartesian": a.cfg.AdkAllowRawCartesian,
 	})
 }
 
@@ -1280,4 +1296,53 @@ func (a *App) simRunScenario(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "passed"})
+}
+
+func (a *App) simRunAgentScenario(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if a.agentMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "ADK agent is not configured")
+		return
+	}
+
+	var req RunScenarioRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if req.Scenario == "" {
+		writeError(w, http.StatusBadRequest, "scenario filename is required")
+		return
+	}
+
+	scenarioPath := filepath.Join(a.cfg.ProjectRoot, "scenarios", filepath.Clean(req.Scenario))
+	sc, err := robotsim.LoadScenario(scenarioPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to load scenario: "+err.Error())
+		return
+	}
+
+	res, err := adkagent.RunAgentScenario(r.Context(), sc, a.agentMgr, a.sim)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scenario run error: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (a *App) simVendor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	file := strings.TrimPrefix(r.URL.Path, "/sim/vendor/")
+	fullPath := filepath.Join(a.cfg.ProjectRoot, "web", "vendor", filepath.Clean(file))
+	http.ServeFile(w, r, fullPath)
 }

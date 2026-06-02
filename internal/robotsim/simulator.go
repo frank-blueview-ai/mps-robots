@@ -389,3 +389,38 @@ func (s *Simulator) updatePosition(x, y, z float64) {
 		}
 	}
 }
+
+// SetInitialState sets the simulator state to a specific initial configuration.
+func (s *Simulator) SetInitialState(pose []float64, gripper string, errCode int, errMsg string, objects []SimObject, slots []SimSlot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(pose) >= 6 {
+		s.tcpPose = append([]float64(nil), pose...)
+	} else {
+		s.tcpPose = []float64{180.0, 0.0, 120.0, 180.0, 0.0, 0.0}
+	}
+	s.gripperState = gripper
+	if s.gripperState == "" {
+		s.gripperState = "open"
+	}
+	s.errorCode = errCode
+	s.errorMessage = errMsg
+	s.isReady = (s.errorCode == 0)
+
+	if objects != nil {
+		s.Objects = append([]SimObject(nil), objects...)
+	} else {
+		s.Objects = nil
+	}
+
+	if slots != nil {
+		s.Slots = append([]SimSlot(nil), slots...)
+	} else {
+		s.Slots = []SimSlot{
+			{Name: "slot1", Position: [3]float64{200.0, -100.0, 20.0}},
+			{Name: "slot2", Position: [3]float64{200.0, 100.0, 20.0}},
+		}
+	}
+	s.updatePosition(s.tcpPose[0], s.tcpPose[1], s.tcpPose[2])
+}

@@ -65,36 +65,14 @@ func RunScenario(ctx context.Context, sc *Scenario, sim *Simulator) error {
 	defer func() { sim.StepDelay = originalDelay }()
 
 	// Apply Initial State
-	sim.mu.Lock()
-	if len(sc.InitialState.Pose) >= 6 {
-		sim.tcpPose = append([]float64(nil), sc.InitialState.Pose...)
-	} else {
-		sim.tcpPose = []float64{180.0, 0.0, 120.0, 180.0, 0.0, 0.0}
-	}
-	sim.gripperState = sc.InitialState.Gripper
-	if sim.gripperState == "" {
-		sim.gripperState = "open"
-	}
-	sim.errorCode = sc.InitialState.ErrorCode
-	sim.errorMessage = sc.InitialState.ErrorMessage
-	sim.isReady = (sim.errorCode == 0)
-
-	if sc.InitialState.Objects != nil {
-		sim.Objects = append([]SimObject(nil), sc.InitialState.Objects...)
-	} else {
-		sim.Objects = nil
-	}
-
-	if sc.InitialState.Slots != nil {
-		sim.Slots = append([]SimSlot(nil), sc.InitialState.Slots...)
-	} else {
-		sim.Slots = []SimSlot{
-			{Name: "slot1", Position: [3]float64{200.0, -100.0, 20.0}},
-			{Name: "slot2", Position: [3]float64{200.0, 100.0, 20.0}},
-		}
-	}
-	sim.updatePosition(sim.tcpPose[0], sim.tcpPose[1], sim.tcpPose[2])
-	sim.mu.Unlock()
+	sim.SetInitialState(
+		sc.InitialState.Pose,
+		sc.InitialState.Gripper,
+		sc.InitialState.ErrorCode,
+		sc.InitialState.ErrorMessage,
+		sc.InitialState.Objects,
+		sc.InitialState.Slots,
+	)
 
 	// Execute steps
 	for idx, step := range sc.Steps {

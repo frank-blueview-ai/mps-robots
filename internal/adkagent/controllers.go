@@ -15,15 +15,17 @@ import (
 
 // LiveController connects to the physical bridge REST endpoints.
 type LiveController struct {
-	bridgeURL string
-	client    *http.Client
-	mu        sync.Mutex
+	bridgeURL         string
+	allowRawCartesian bool
+	client            *http.Client
+	mu                sync.Mutex
 }
 
-func NewLiveController(bridgeURL string) *LiveController {
+func NewLiveController(bridgeURL string, allowRawCartesian bool) *LiveController {
 	return &LiveController{
-		bridgeURL: bridgeURL,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		bridgeURL:         bridgeURL,
+		allowRawCartesian: allowRawCartesian,
+		client:            &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -147,9 +149,36 @@ func (c *LiveController) ListCapabilities(ctx context.Context) (*robot.Capabilit
 	}, nil
 }
 
+func (c *LiveController) ensureLiveReady(ctx context.Context, action string) error {
+	state, err := c.GetState(ctx)
+	if err != nil {
+		return fmt.Errorf("readiness check failed: %w", err)
+	}
+	if !state.BridgeConnected {
+		return fmt.Errorf("readiness check failed: bridge is disconnected")
+	}
+	if !state.RobotConnected {
+		return fmt.Errorf("readiness check failed: robot is disconnected")
+	}
+	if !state.IsReady {
+		return fmt.Errorf("readiness check failed: robot is not ready")
+	}
+	if state.ErrorCode != 0 {
+		return fmt.Errorf("readiness check failed: robot has error code %d (%s)", state.ErrorCode, state.ErrorMessage)
+	}
+	if !state.PhysicalMotionAllowed {
+		return fmt.Errorf("readiness check failed: PhysicalMotionAllowed is false")
+	}
+	return nil
+}
+
 func (c *LiveController) ExecuteNamedSkill(ctx context.Context, skillName string) (*robot.ExecuteSkillResults, error) {
 	if !robot.AllowedSkills[skillName] {
 		return nil, fmt.Errorf("skill %q is not in the allowed skills list", skillName)
+	}
+
+	if err := c.ensureLiveReady(ctx, "execute_named_skill: "+skillName); err != nil {
+		return nil, err
 	}
 
 	c.mu.Lock()
@@ -245,6 +274,14 @@ func (c *LiveController) MoveToSafePose(ctx context.Context, pose robot.MovePose
 
 	if pose.X == nil || pose.Y == nil || pose.Z == nil {
 		return nil, fmt.Errorf("must specify either a named pose or all coordinate axes (x, y, z)")
+	}
+
+	if !c.allowRawCartesian {
+		return nil, fmt.Errorf("Live raw Cartesian movement is disabled. Use a named pose or named skill, or explicitly set ADK_ALLOW_RAW_CARTESIAN=true after calibration.")
+	}
+
+	if err := c.ensureLiveReady(ctx, "move_to_safe_pose"); err != nil {
+		return nil, err
 	}
 
 	x, y, z := *pose.X, *pose.Y, *pose.Z

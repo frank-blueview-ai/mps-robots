@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ORA Robot Digital Twin Simulator</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Three.js and OrbitControls from CDN -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="/sim/vendor/tailwind.js"></script>
+  <!-- Three.js and OrbitControls from local vendor folder -->
+  <script src="/sim/vendor/three.min.js"></script>
+  <script src="/sim/vendor/OrbitControls.js"></script>
   <style>
     @keyframes pulse-red {
       0%, 100% { background-color: rgba(239, 68, 68, 0.2); }
@@ -38,6 +38,11 @@
       </button>
     </div>
   </header>
+
+  <!-- Safety Warning Banner -->
+  <div class="bg-amber-500/10 border-b border-amber-500/20 text-center py-2 px-4 text-amber-300 font-semibold text-xs tracking-wide">
+    ⚠️ WARNING: Approximate visual simulation only. Passing simulation does not prove real-world robot safety.
+  </div>
 
   <!-- Emergency Banner (Hidden by default) -->
   <div id="emergency-banner" class="hidden flash-red text-center py-2 px-4 border-b border-red-500 text-red-200 font-semibold text-sm">
@@ -102,9 +107,14 @@
           </select>
         </div>
 
-        <button onclick="runSelectedScenario()" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition shadow-md shadow-indigo-900/20">
-          Execute Scenario Test
-        </button>
+        <div class="space-y-2">
+          <button onclick="runSelectedScenario()" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition shadow-md shadow-indigo-900/20">
+            Execute Scenario Test
+          </button>
+          <button onclick="runSelectedAgentScenario()" class="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow-md shadow-emerald-900/20">
+            Execute ADK Agent Scenario
+          </button>
+        </div>
 
         <div class="flex-1 flex flex-col min-h-[160px] bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
           <div class="px-4 py-2 border-b border-slate-800 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
@@ -475,6 +485,36 @@
         fetchState();
       } catch (err) {
         appendLog(`❌ SCENARIO CRITICAL ERROR: ${err.message}`);
+      }
+    }
+
+    async function runSelectedAgentScenario() {
+      const selector = document.getElementById('scenario-selector');
+      const filename = selector.value;
+      
+      appendLog(`Starting ADK-in-the-Loop scenario: ${filename}...`);
+      
+      try {
+        const res = await fetch('/api/sim/scenarios/run-agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scenario: filename })
+        });
+        
+        const data = await res.json();
+        if (res.ok && data.pass) {
+          appendLog(`✅ ADK SCENARIO PASSED: ${filename}`);
+          appendLog(`   Final: ${data.finalStateSummary}`);
+          if (data.confirmationCallIds && data.confirmationCallIds.length > 0) {
+            appendLog(`   Confirms: ${data.confirmationCallIds.join(', ')}`);
+          }
+        } else {
+          appendLog(`❌ ADK SCENARIO FAILED: ${data.errorMessage || data.error || 'Unknown evaluation failure'}`);
+        }
+        
+        fetchState();
+      } catch (err) {
+        appendLog(`❌ ADK SCENARIO CRITICAL ERROR: ${err.message}`);
       }
     }
 

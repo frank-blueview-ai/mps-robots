@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,12 +34,17 @@ type Config struct {
 	GeminiAPIKey        string
 	ArmMode             string              // "dry_run", "sim", "live"
 	Simulator           robot.ArmController // Shared simulator reference if instantiated externally
+	AllowRawCartesian   bool
 }
 
 type PendingConfirm struct {
-	SessionID          string
-	ConfirmationCallID string
-	ToolName           string
+	SessionID          string         `json:"sessionId"`
+	ConfirmationCallID string         `json:"confirmationCallId"`
+	ToolName           string         `json:"toolName"`
+	ToolArgs           map[string]any `json:"toolArgs"`
+	RiskLevel          string         `json:"riskLevel"`
+	ExpiresAt          time.Time      `json:"expiresAt"`
+	Consumed           bool           `json:"consumed"`
 }
 
 type Manager struct {
@@ -48,6 +55,8 @@ type Manager struct {
 	mu              sync.Mutex
 	pendingConfirms map[string]*PendingConfirm
 	controller      robot.ArmController
+	fakeAgentStates map[string]int
+	fakeAgentTasks  map[string]string
 }
 
 func (m *Manager) Controller() robot.ArmController {
@@ -81,7 +90,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		if !cfg.EnableMotion {
 			return nil, fmt.Errorf("live mode is rejected unless motion is explicitly enabled via ADK_ARM_ENABLE_MOTION")
 		}
-		ctrl = NewLiveController(cfg.BridgeURL)
+		ctrl = NewLiveController(cfg.BridgeURL, cfg.AllowRawCartesian)
 	case "dry_run":
 		ctrl = NewDryRunController()
 	default:
@@ -95,6 +104,8 @@ func NewManager(cfg Config) (*Manager, error) {
 		client:          &http.Client{Timeout: 30 * time.Second},
 		pendingConfirms: make(map[string]*PendingConfirm),
 		controller:      ctrl,
+		fakeAgentStates: make(map[string]int),
+		fakeAgentTasks:  make(map[string]string),
 	}
 
 	// 1. Initialize Gemini Model
@@ -207,6 +218,11 @@ type ChatResponse struct {
 	AssistantText        string           `json:"assistantText"`
 	ToolCalls            []ToolCallDetail `json:"toolCalls"`
 	ConfirmationRequired bool             `json:"confirmationRequired"`
+	ConfirmationCallID   string           `json:"confirmationCallId,omitempty"`
+	ToolName             string           `json:"toolName,omitempty"`
+	ToolArgs             map[string]any   `json:"toolArgs,omitempty"`
+	RiskLevel            string           `json:"riskLevel,omitempty"`
+	ExpiresAt            string           `json:"expiresAt,omitempty"`
 	DryRun               bool             `json:"dryRun"`
 	Error                string           `json:"error,omitempty"`
 }
@@ -217,8 +233,9 @@ type ToolCallDetail struct {
 }
 
 type ConfirmRequest struct {
-	SessionID string `json:"sessionId"`
-	Confirmed bool   `json:"confirmed"`
+	SessionID          string `json:"sessionId"`
+	ConfirmationCallID string `json:"confirmationCallId"`
+	Confirmed          bool   `json:"confirmed"`
 }
 
 type ConfirmResponse struct {
@@ -233,6 +250,7 @@ type StateResponse struct {
 	RequireConfirmation bool   `json:"requireConfirmation"`
 	GeminiModel         string `json:"geminiModel"`
 	ArmMode             string `json:"armMode"`
+	AllowRawCartesian   bool   `json:"allowRawCartesian"`
 }
 
 // Handlers
@@ -284,35 +302,18 @@ func (m *Manager) ConfirmHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sessionId is required")
 		return
 	}
-
-	m.mu.Lock()
-	pending, ok := m.pendingConfirms[req.SessionID]
-	if ok {
-		delete(m.pendingConfirms, req.SessionID)
-	}
-	m.mu.Unlock()
-
-	if !ok {
-		writeError(w, http.StatusBadRequest, "no pending confirmation found for this session")
+	if req.ConfirmationCallID == "" {
+		writeError(w, http.StatusBadRequest, "confirmationCallId is required")
 		return
 	}
 
-	funcResponse := &genai.FunctionResponse{
-		Name: toolconfirmation.FunctionCallName,
-		ID:   pending.ConfirmationCallID,
-		Response: map[string]any{
-			"confirmed": req.Confirmed,
-			"payload":   nil,
-		},
+	resp, err := m.ConfirmInternal(r.Context(), req.SessionID, req.ConfirmationCallID, req.Confirmed)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
-	appResponse := &genai.Content{
-		Role:  string(genai.RoleUser),
-		Parts: []*genai.Part{{FunctionResponse: funcResponse}},
-	}
-
-	ctx := r.Context()
-	m.runTurnAndResponse(w, ctx, req.SessionID, appResponse)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (m *Manager) StateHandler(w http.ResponseWriter, r *http.Request) {
@@ -326,15 +327,273 @@ func (m *Manager) StateHandler(w http.ResponseWriter, r *http.Request) {
 		RequireConfirmation: m.cfg.RequireConfirmation,
 		GeminiModel:         m.cfg.GeminiModel,
 		ArmMode:             m.cfg.ArmMode,
+		AllowRawCartesian:   m.cfg.AllowRawCartesian,
 	})
 }
 
 // Shared runner execution logic
-func (m *Manager) runTurnAndResponse(w http.ResponseWriter, ctx context.Context, sessionID string, content *genai.Content) {
+type fakeToolContext struct {
+	agent.ToolContext
+	ctx context.Context
+}
+
+func (f *fakeToolContext) Deadline() (deadline time.Time, ok bool) { return f.ctx.Deadline() }
+func (f *fakeToolContext) Done() <-chan struct{}                   { return f.ctx.Done() }
+func (f *fakeToolContext) Err() error                              { return f.ctx.Err() }
+func (f *fakeToolContext) Value(key any) any                       { return f.ctx.Value(key) }
+
+func (m *Manager) runFakeAgentTurn(ctx context.Context, sessionID string, content *genai.Content) (ChatResponse, error) {
+	m.mu.Lock()
+	if m.fakeAgentStates == nil {
+		m.fakeAgentStates = make(map[string]int)
+	}
+	if m.fakeAgentTasks == nil {
+		m.fakeAgentTasks = make(map[string]string)
+	}
+	task := m.fakeAgentTasks[sessionID]
+	m.mu.Unlock()
+
+	var isConfirmResponse bool
+	var confirmed bool
+	var confirmCallID string
+
+	if content != nil {
+		for _, part := range content.Parts {
+			if part.Text != "" {
+				txt := strings.ToLower(part.Text)
+				if strings.Contains(txt, "pick") || strings.Contains(txt, "place") || strings.Contains(txt, "slot") {
+					task = "pick_place"
+				} else if strings.Contains(txt, "gripper") {
+					task = "gripper"
+				} else if strings.Contains(txt, "bounds") || strings.Contains(txt, "x=50") {
+					task = "unsafe"
+				} else if strings.Contains(txt, "home") || strings.Contains(txt, "recover") {
+					task = "home"
+				}
+				m.mu.Lock()
+				m.fakeAgentTasks[sessionID] = task
+				m.fakeAgentStates[sessionID] = 0
+				m.mu.Unlock()
+			}
+			if fr := part.FunctionResponse; fr != nil {
+				if fr.Name == toolconfirmation.FunctionCallName {
+					isConfirmResponse = true
+					confirmCallID = fr.ID
+					if fr.Response != nil {
+						confirmed, _ = fr.Response["confirmed"].(bool)
+					}
+				}
+			}
+		}
+	}
+
+	tctx := &fakeToolContext{ctx: ctx}
+	resp := ChatResponse{
+		SessionID: sessionID,
+		DryRun:    m.cfg.ArmMode == "dry_run",
+	}
+
+	for {
+		m.mu.Lock()
+		curState := m.fakeAgentStates[sessionID]
+		m.mu.Unlock()
+
+		var executed bool
+		var execErr error
+
+		executeOrConfirm := func(toolName string, argsMap map[string]any, executeFn func() (string, error)) {
+			if m.cfg.RequireConfirmation {
+				m.mu.Lock()
+				pending, ok := m.pendingConfirms[sessionID+"_"+confirmCallID]
+				m.mu.Unlock()
+
+				isConfirmForThisTool := isConfirmResponse && ok && pending.ToolName == toolName
+
+				if !isConfirmForThisTool {
+					callID := "fc_" + generateSessionID()
+					risk := "high"
+					expires := time.Now().Add(2 * time.Minute)
+
+					m.mu.Lock()
+					pending := &PendingConfirm{
+						SessionID:          sessionID,
+						ConfirmationCallID: callID,
+						ToolName:           toolName,
+						ToolArgs:           argsMap,
+						RiskLevel:          risk,
+						ExpiresAt:          expires,
+						Consumed:           false,
+					}
+					m.pendingConfirms[sessionID+"_"+callID] = pending
+					m.mu.Unlock()
+
+					resp.ConfirmationRequired = true
+					resp.ConfirmationCallID = callID
+					resp.ToolName = toolName
+					resp.ToolArgs = argsMap
+					resp.RiskLevel = risk
+					resp.ExpiresAt = expires.Format(time.RFC3339)
+					resp.ToolCalls = []ToolCallDetail{{Name: toolName, Args: argsMap}}
+					return
+				} else {
+					if confirmCallID != "" {
+						m.mu.Lock()
+						key := sessionID + "_" + confirmCallID
+						if pending, ok := m.pendingConfirms[key]; ok {
+							pending.Consumed = true
+						}
+						m.mu.Unlock()
+					}
+					isConfirmResponse = false // Consume it!
+					if !confirmed {
+						resp.AssistantText = "Confirmation denied. Motion aborted."
+						resp.ConfirmationRequired = false
+						execErr = fmt.Errorf("confirmation denied")
+						return
+					}
+				}
+			}
+
+			status, err := executeFn()
+			if err != nil {
+				execErr = err
+			} else {
+				resp.AssistantText = status
+			}
+
+			m.mu.Lock()
+			m.fakeAgentStates[sessionID]++
+			m.mu.Unlock()
+			executed = true
+		}
+
+		switch task {
+		case "pick_place":
+			if curState == 0 {
+				args := map[string]any{"skill_name": "pick_from_known_slot"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "pick_from_known_slot"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else if curState == 1 {
+				args := map[string]any{"skill_name": "place_at_known_slot"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "place_at_known_slot"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else {
+				resp.AssistantText = "Done"
+				return resp, nil
+			}
+
+		case "gripper":
+			if curState == 0 {
+				args := map[string]any{"skill_name": "close_gripper"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "close_gripper"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else if curState == 1 {
+				args := map[string]any{"skill_name": "open_gripper"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "open_gripper"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else {
+				resp.AssistantText = "Done"
+				return resp, nil
+			}
+
+		case "unsafe":
+			if curState == 0 {
+				x, y, z := 50.0, 0.0, 100.0
+				args := map[string]any{"x": x, "y": y, "z": z}
+				executeOrConfirm("move_to_safe_pose", args, func() (string, error) {
+					res, err := m.moveToSafePoseTool(tctx, robot.MovePoseArgs{X: &x, Y: &y, Z: &z})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else if curState == 1 {
+				x, y, z := 200.0, 300.0, 100.0
+				args := map[string]any{"x": x, "y": y, "z": z}
+				executeOrConfirm("move_to_safe_pose", args, func() (string, error) {
+					res, err := m.moveToSafePoseTool(tctx, robot.MovePoseArgs{X: &x, Y: &y, Z: &z})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else {
+				resp.AssistantText = "Done"
+				return resp, nil
+			}
+
+		case "home":
+			if curState == 0 {
+				args := map[string]any{"skill_name": "home"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "home"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else if curState == 1 {
+				args := map[string]any{"skill_name": "home"}
+				executeOrConfirm("execute_named_skill", args, func() (string, error) {
+					res, err := m.executeNamedSkillTool(tctx, robot.ExecuteSkillArgs{SkillName: "home"})
+					if err != nil {
+						return "", err
+					}
+					return res.Status, nil
+				})
+			} else {
+				resp.AssistantText = "Done"
+				return resp, nil
+			}
+		default:
+			return resp, fmt.Errorf("unknown fake agent task")
+		}
+
+		if resp.ConfirmationRequired {
+			return resp, nil
+		}
+
+		if execErr != nil {
+			resp.Error = execErr.Error()
+			return resp, nil
+		}
+
+		if !executed {
+			return resp, nil
+		}
+	}
+}
+
+func (m *Manager) RunTurnInternal(ctx context.Context, sessionID string, content *genai.Content) (ChatResponse, error) {
+	if m.cfg.GeminiAPIKey == "fake_key" || os.Getenv("ADK_TEST_FAKE_AGENT") == "true" {
+		return m.runFakeAgentTurn(ctx, sessionID, content)
+	}
+
 	var assistantText string
 	var toolCalls []ToolCallDetail
 	var confirmationRequired bool
 	var firstErr error
+	var lastConfirm *PendingConfirm
 
 	for event, err := range m.runner.Run(ctx, "user", sessionID, content, agent.RunConfig{
 		StreamingMode: agent.StreamingModeNone,
@@ -361,13 +620,28 @@ func (m *Manager) runTurnAndResponse(w http.ResponseWriter, ctx context.Context,
 						confirmationRequired = true
 						originalCall, err := toolconfirmation.OriginalCallFrom(fc)
 						if err == nil && originalCall != nil {
+							risk := "low"
+							if originalCall.Name == "execute_named_skill" || originalCall.Name == "move_to_safe_pose" {
+								risk = "high"
+							}
+							expires := time.Now().Add(2 * time.Minute)
+
 							m.mu.Lock()
-							m.pendingConfirms[sessionID] = &PendingConfirm{
+							key := sessionID + "_" + fc.ID
+							pending := &PendingConfirm{
 								SessionID:          sessionID,
 								ConfirmationCallID: fc.ID,
 								ToolName:           originalCall.Name,
+								ToolArgs:           originalCall.Args,
+								RiskLevel:          risk,
+								ExpiresAt:          expires,
+								Consumed:           false,
 							}
+							m.pendingConfirms[key] = pending
 							m.mu.Unlock()
+
+							lastConfirm = pending
+
 							toolCalls = append(toolCalls, ToolCallDetail{
 								Name: originalCall.Name,
 								Args: originalCall.Args,
@@ -385,17 +659,74 @@ func (m *Manager) runTurnAndResponse(w http.ResponseWriter, ctx context.Context,
 	}
 
 	if firstErr != nil && len(toolCalls) == 0 && assistantText == "" {
-		writeError(w, http.StatusInternalServerError, "agent run error: "+firstErr.Error())
-		return
+		return ChatResponse{}, fmt.Errorf("agent run error: %w", firstErr)
 	}
 
-	writeJSON(w, http.StatusOK, ChatResponse{
+	resp := ChatResponse{
 		SessionID:            sessionID,
 		AssistantText:        assistantText,
 		ToolCalls:            toolCalls,
 		ConfirmationRequired: confirmationRequired,
 		DryRun:               m.cfg.ArmMode == "dry_run",
-	})
+	}
+
+	if confirmationRequired && lastConfirm != nil {
+		resp.ConfirmationCallID = lastConfirm.ConfirmationCallID
+		resp.ToolName = lastConfirm.ToolName
+		resp.ToolArgs = lastConfirm.ToolArgs
+		resp.RiskLevel = lastConfirm.RiskLevel
+		resp.ExpiresAt = lastConfirm.ExpiresAt.Format(time.RFC3339)
+	}
+
+	return resp, nil
+}
+
+func (m *Manager) ConfirmInternal(ctx context.Context, sessionID string, confirmationCallID string, confirmed bool) (ChatResponse, error) {
+	m.mu.Lock()
+	key := sessionID + "_" + confirmationCallID
+	pending, ok := m.pendingConfirms[key]
+	if ok {
+		if pending.Consumed {
+			m.mu.Unlock()
+			return ChatResponse{}, fmt.Errorf("confirmation was already consumed")
+		}
+		if time.Now().After(pending.ExpiresAt) {
+			m.mu.Unlock()
+			return ChatResponse{}, fmt.Errorf("pending confirmation expired")
+		}
+		// Consumed status is updated in executeOrConfirm for fake agent, but we can also set it here
+		pending.Consumed = true
+	}
+	m.mu.Unlock()
+
+	if !ok {
+		return ChatResponse{}, fmt.Errorf("no matching pending confirmation found")
+	}
+
+	funcResponse := &genai.FunctionResponse{
+		Name: toolconfirmation.FunctionCallName,
+		ID:   pending.ConfirmationCallID,
+		Response: map[string]any{
+			"confirmed": confirmed,
+			"payload":   nil,
+		},
+	}
+
+	appResponse := &genai.Content{
+		Role:  string(genai.RoleUser),
+		Parts: []*genai.Part{{FunctionResponse: funcResponse}},
+	}
+
+	return m.RunTurnInternal(ctx, sessionID, appResponse)
+}
+
+func (m *Manager) runTurnAndResponse(w http.ResponseWriter, ctx context.Context, sessionID string, content *genai.Content) {
+	resp, err := m.RunTurnInternal(ctx, sessionID, content)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func generateSessionID() string {

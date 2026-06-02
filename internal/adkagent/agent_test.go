@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -128,7 +129,7 @@ func TestGetRobotStateToolLive(t *testing.T) {
 			EnableMotion: true,
 			ArmMode:      "live",
 		},
-		controller: NewLiveController(server.URL),
+		controller: NewLiveController(server.URL, false),
 	}
 
 	ctx := &mockToolContext{ctx: context.Background()}
@@ -170,6 +171,19 @@ func TestListRobotCapabilities(t *testing.T) {
 func TestExecuteNamedSkillDryRunAndLive(t *testing.T) {
 	var called int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"connected": true,
+				"latest": {
+					"xarm_connected": true,
+					"xarm_is_ready": true,
+					"xarm_state": 0,
+					"xarm_error_code": 0
+				}
+			}`))
+			return
+		}
 		atomic.AddInt32(&called, 1)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -192,7 +206,7 @@ func TestExecuteNamedSkillDryRunAndLive(t *testing.T) {
 	}
 
 	mLive := &Manager{
-		controller: NewLiveController(server.URL),
+		controller: NewLiveController(server.URL, false),
 	}
 
 	resLive, err := mLive.executeNamedSkillTool(ctx, robot.ExecuteSkillArgs{SkillName: "home"})
@@ -248,7 +262,7 @@ func TestEmergencyStopBypasses(t *testing.T) {
 	defer server.Close()
 
 	m := &Manager{
-		controller: NewLiveController(server.URL),
+		controller: NewLiveController(server.URL, false),
 	}
 
 	ctx := &mockToolContext{ctx: context.Background()}
@@ -268,6 +282,19 @@ func TestConcurrentCallsSerialization(t *testing.T) {
 	var mu sync.Mutex
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"connected": true,
+				"latest": {
+					"xarm_connected": true,
+					"xarm_is_ready": true,
+					"xarm_state": 0,
+					"xarm_error_code": 0
+				}
+			}`))
+			return
+		}
 		current := atomic.AddInt32(&activeCalls, 1)
 		mu.Lock()
 		if current > maxConcurrent {
@@ -282,7 +309,7 @@ func TestConcurrentCallsSerialization(t *testing.T) {
 	defer server.Close()
 
 	m := &Manager{
-		controller: NewLiveController(server.URL),
+		controller: NewLiveController(server.URL, false),
 	}
 
 	ctx := &mockToolContext{ctx: context.Background()}
@@ -333,5 +360,36 @@ func TestSimModeSimulatorStateTransitions(t *testing.T) {
 	}
 	if len(objects) == 0 || !objects[0].Grasped {
 		t.Error("expected object to be grasped in simulator state")
+	}
+}
+
+func TestAgentScenarioRunner(t *testing.T) {
+	sim := robotsim.NewSimulator()
+	sim.StepDelay = 0
+
+	m, err := NewManager(Config{
+		GeminiAPIKey:        "fake_key",
+		ArmMode:             "sim",
+		RequireConfirmation: true,
+		Simulator:           sim,
+	})
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	path1 := filepath.Join("..", "..", "scenarios", "basic_pick_place.yaml")
+	sc1, err := robotsim.LoadScenario(path1)
+	if err != nil {
+		t.Fatalf("failed to load scenario 1: %v", err)
+	}
+
+	res, err := RunAgentScenario(ctx, sc1, m, sim)
+	if err != nil {
+		t.Fatalf("agent scenario run failed: %v", err)
+	}
+	if !res.Pass {
+		t.Errorf("expected agent scenario to pass, got error: %s", res.ErrorMessage)
 	}
 }
