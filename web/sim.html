@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ORA Robot Digital Twin Simulator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Three.js and OrbitControls from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    @keyframes pulse-red {
+      0%, 100% { background-color: rgba(239, 68, 68, 0.2); }
+      50% { background-color: rgba(239, 68, 68, 0.6); }
+    }
+    .flash-red {
+      animation: pulse-red 2s infinite;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden font-sans">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800 shadow-md">
+    <div class="flex items-center space-x-3">
+      <span class="flex h-3 w-3 relative">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+      </span>
+      <h1 class="text-xl font-bold tracking-tight text-slate-100">ORA Arm Digital Twin</h1>
+    </div>
+    <div class="flex items-center space-x-4">
+      <div id="arm-mode-badge" class="px-3 py-1 text-xs font-semibold rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+        MODE: SIM
+      </div>
+      <button onclick="resetSimulation()" class="px-4 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
+        Reset Simulation
+      </button>
+    </div>
+  </header>
+
+  <!-- Emergency Banner (Hidden by default) -->
+  <div id="emergency-banner" class="hidden flash-red text-center py-2 px-4 border-b border-red-500 text-red-200 font-semibold text-sm">
+    ⚠️ EMERGENCY STOP TRIGGERED: Robot is frozen. Press "Reset Simulation" to recover.
+  </div>
+
+  <!-- Main Grid -->
+  <div class="flex-1 flex overflow-hidden">
+    <!-- 3D Canvas (Left/Center) -->
+    <div class="flex-1 relative">
+      <div id="canvas-container" class="w-full h-full"></div>
+      <div class="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur border border-slate-800 p-4 rounded-xl text-xs space-y-2 pointer-events-none">
+        <div class="font-semibold text-slate-400 uppercase tracking-wider text-[10px]">Kinematics View (mm)</div>
+        <div>TCP Pose: <span id="val-tcp" class="font-mono text-slate-200">-</span></div>
+        <div>Joints: <span id="val-joints" class="font-mono text-slate-200">-</span></div>
+      </div>
+    </div>
+
+    <!-- Sidebar (Right) -->
+    <div class="w-96 bg-slate-900 border-l border-slate-800 flex flex-col overflow-y-auto">
+      
+      <!-- Telemetry Panel -->
+      <div class="p-6 border-b border-slate-800 space-y-4">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Simulator Status</h2>
+        
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+            <div class="text-[10px] text-slate-500 uppercase font-semibold">Gripper</div>
+            <div id="val-gripper" class="text-sm font-semibold capitalize text-indigo-400">-</div>
+          </div>
+          <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+            <div class="text-[10px] text-slate-500 uppercase font-semibold">Error Code</div>
+            <div id="val-error" class="text-sm font-semibold text-slate-200">0</div>
+          </div>
+        </div>
+
+        <div id="error-desc-box" class="hidden bg-red-950/40 border border-red-900/60 p-3 rounded-lg text-xs text-red-400">
+          <span class="font-semibold">Error:</span> <span id="val-error-msg">-</span>
+        </div>
+      </div>
+
+      <!-- Workspace Objects -->
+      <div class="p-6 border-b border-slate-800 space-y-4">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Workspace Objects</h2>
+        <div id="objects-list" class="space-y-2">
+          <!-- Populated dynamically -->
+          <div class="text-xs text-slate-500 italic">No objects registered</div>
+        </div>
+      </div>
+
+      <!-- Scenario Evaluation Runner -->
+      <div class="p-6 flex-1 space-y-4 flex flex-col">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Scenario Evaluator</h2>
+        
+        <div class="space-y-2">
+          <label class="block text-xs text-slate-400">Select Training Scenario:</label>
+          <select id="scenario-selector" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500">
+            <option value="basic_pick_place.yaml">1. Basic Pick and Place</option>
+            <option value="gripper_test.yaml">2. Gripper Open/Close Test</option>
+            <option value="unsafe_motion_rejection.yaml">3. Unsafe Motion Rejection</option>
+            <option value="recovery_from_error.yaml">4. Recovery From Error State</option>
+          </select>
+        </div>
+
+        <button onclick="runSelectedScenario()" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition shadow-md shadow-indigo-900/20">
+          Execute Scenario Test
+        </button>
+
+        <div class="flex-1 flex flex-col min-h-[160px] bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
+          <div class="px-4 py-2 border-b border-slate-800 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
+            Evaluation Logs
+          </div>
+          <div id="scenario-log" class="flex-1 p-4 font-mono text-[11px] text-slate-400 overflow-y-auto space-y-1 select-text">
+            Console ready. Select a scenario and execute to begin testing.
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Three.js Simulator Render script -->
+  <script>
+    let scene, camera, renderer, controls;
+    let baseLink, link1, link2, link3, gripperGroup, gripperLeft, gripperRight;
+    let sceneObjects = {};
+    let slotMeshes = [];
+    const scale = 0.01; // Scale factor: 1 Three.js unit = 100mm (0.01 unit per mm)
+
+    // Base dimensions from models
+    const BASE_HEIGHT = 80 * scale;
+    const LINK1_LENGTH = 120 * scale;
+    const LINK2_LENGTH = 100 * scale;
+    const LINK3_LENGTH = 80 * scale;
+
+    function init3D() {
+      const container = document.getElementById('canvas-container');
+      
+      // Scene
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0f172a); // dark slate
+
+      // Camera
+      camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+      camera.position.set(4, 3, 5);
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.shadowMap.enabled = true;
+      container.appendChild(renderer.domElement);
+
+      // Controls
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2 - 0.05; // don't go below table floor
+
+      // Lights
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+      scene.add(ambientLight);
+
+      const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight1.position.set(5, 10, 7);
+      dirLight1.castShadow = true;
+      dirLight1.shadow.mapSize.width = 1024;
+      dirLight1.shadow.mapSize.height = 1024;
+      scene.add(dirLight1);
+
+      // Table & Grid Floor
+      const grid = new THREE.GridHelper(10, 20, 0x334155, 0x1e293b);
+      grid.position.y = -0.001;
+      scene.add(grid);
+
+      const tableGeo = new THREE.PlaneGeometry(10, 10);
+      const tableMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
+      const table = new THREE.Mesh(tableGeo, tableMat);
+      table.rotation.x = -Math.PI / 2;
+      table.receiveShadow = true;
+      scene.add(table);
+
+      // Build Arm Geometry Hierarchy
+      buildArmGeometry();
+
+      // Render Loop
+      animate();
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function buildArmGeometry() {
+      // Base Link
+      const baseGeo = new THREE.CylinderGeometry(0.35, 0.4, BASE_HEIGHT, 32);
+      const baseMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.5, roughness: 0.4 });
+      baseLink = new THREE.Mesh(baseGeo, baseMat);
+      baseLink.position.y = BASE_HEIGHT / 2;
+      baseLink.castShadow = true;
+      baseLink.receiveShadow = true;
+      scene.add(baseLink);
+
+      // Link 1 Group (rotates J1 around Y axis)
+      link1 = new THREE.Group();
+      link1.position.y = BASE_HEIGHT / 2; // top of base
+      baseLink.add(link1);
+
+      const link1MeshGeo = new THREE.CylinderGeometry(0.2, 0.2, LINK1_LENGTH, 16);
+      const jointMat = new THREE.MeshStandardMaterial({ color: 0x4f46e5, metalness: 0.6, roughness: 0.3 }); // indigo joint
+      const link1Mesh = new THREE.Mesh(link1MeshGeo, baseMat);
+      link1Mesh.position.y = LINK1_LENGTH / 2;
+      link1Mesh.castShadow = true;
+      link1.add(link1Mesh);
+
+      // Shoulder Joint Group (rotates J2 around X axis)
+      link2 = new THREE.Group();
+      link2.position.y = LINK1_LENGTH;
+      link1.add(link2);
+
+      const shoulderJointGeo = new THREE.SphereGeometry(0.22, 16, 16);
+      const shoulderJoint = new THREE.Mesh(shoulderJointGeo, jointMat);
+      link2.add(shoulderJoint);
+
+      const link2MeshGeo = new THREE.CylinderGeometry(0.15, 0.15, LINK2_LENGTH, 16);
+      const link2Mesh = new THREE.Mesh(link2MeshGeo, baseMat);
+      link2Mesh.position.y = LINK2_LENGTH / 2;
+      link2Mesh.castShadow = true;
+      link2.add(link2Mesh);
+
+      // Elbow Joint Group (rotates J3 around X axis)
+      link3 = new THREE.Group();
+      link3.position.y = LINK2_LENGTH;
+      link2.add(link3);
+
+      const elbowJointGeo = new THREE.SphereGeometry(0.17, 16, 16);
+      const elbowJoint = new THREE.Mesh(elbowJointGeo, jointMat);
+      link3.add(elbowJoint);
+
+      const link3MeshGeo = new THREE.CylinderGeometry(0.12, 0.12, LINK3_LENGTH, 16);
+      const link3Mesh = new THREE.Mesh(link3MeshGeo, baseMat);
+      link3Mesh.position.y = LINK3_LENGTH / 2;
+      link3Mesh.castShadow = true;
+      link3.add(link3Mesh);
+
+      // Gripper wrist group
+      gripperGroup = new THREE.Group();
+      gripperGroup.position.y = LINK3_LENGTH;
+      link3.add(gripperGroup);
+
+      const wristGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.1, 16);
+      const wrist = new THREE.Mesh(wristGeo, jointMat);
+      wrist.rotation.x = Math.PI / 2;
+      gripperGroup.add(wrist);
+
+      // Gripper fingers
+      const fingerGeo = new THREE.BoxGeometry(0.06, 0.2, 0.04);
+      const gripperMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.6 });
+
+      gripperLeft = new THREE.Mesh(fingerGeo, gripperMat);
+      gripperLeft.position.set(-0.1, 0.1, 0);
+      gripperLeft.castShadow = true;
+      gripperGroup.add(gripperLeft);
+
+      gripperRight = new THREE.Mesh(fingerGeo, gripperMat);
+      gripperRight.position.set(0.1, 0.1, 0);
+      gripperRight.castShadow = true;
+      gripperGroup.add(gripperRight);
+    }
+
+    function updateArmJoints(joints) {
+      if (!joints || joints.length < 6) return;
+      
+      // J1: base rotation around Y (in degrees to radians)
+      link1.rotation.y = joints[0] * Math.PI / 180;
+
+      // J2: shoulder pitch around X axis
+      link2.rotation.x = joints[1] * Math.PI / 180;
+
+      // J3: elbow pitch around X axis
+      link3.rotation.x = joints[2] * Math.PI / 180;
+
+      // J5 tilts the gripper wrist
+      gripperGroup.rotation.x = joints[4] * Math.PI / 180;
+    }
+
+    function updateGripperMesh(state) {
+      if (state === "closed") {
+        gripperLeft.position.x = -0.04;
+        gripperRight.position.x = 0.04;
+      } else {
+        gripperLeft.position.x = -0.12;
+        gripperRight.position.x = 0.12;
+      }
+    }
+
+    function drawSlots(slots) {
+      if (!slots) return;
+      
+      // Remove old slot meshes
+      slotMeshes.forEach(mesh => scene.remove(mesh));
+      slotMeshes = [];
+
+      slots.forEach(slot => {
+        const slotGeo = new THREE.RingGeometry(0.2, 0.22, 32);
+        const slotMat = new THREE.MeshBasicMaterial({ color: 0x6366f1, side: THREE.DoubleSide });
+        const slotMesh = new THREE.Mesh(slotGeo, slotMat);
+        
+        slotMesh.position.set(slot.position[0] * scale, 0.002, -slot.position[1] * scale); // Flip Y to Three.js -Z
+        slotMesh.rotation.x = Math.PI / 2;
+        scene.add(slotMesh);
+        slotMeshes.push(slotMesh);
+      });
+    }
+
+    function drawObjects(objects) {
+      if (!objects) return;
+
+      // Check current scene meshes vs new objects
+      const newKeys = {};
+      objects.forEach(obj => {
+        newKeys[obj.name] = true;
+        let mesh = sceneObjects[obj.name];
+        
+        const sizeX = obj.size[0] * scale;
+        const sizeY = obj.size[1] * scale;
+        const sizeZ = obj.size[2] * scale;
+
+        if (!mesh) {
+          // Create new mesh
+          const colorHex = parseInt(obj.color.replace("#", "0x")) || 0xef4444;
+          const objGeo = obj.shape === "cylinder" 
+            ? new THREE.CylinderGeometry(sizeX/2, sizeX/2, sizeY, 16)
+            : new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+          
+          const objMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.5 });
+          mesh = new THREE.Mesh(objGeo, objMat);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          sceneObjects[obj.name] = mesh;
+          scene.add(mesh);
+        }
+
+        // Update position (Flip Y to Three.js -Z)
+        mesh.position.set(
+          obj.position[0] * scale,
+          obj.position[2] * scale,
+          -obj.position[1] * scale
+        );
+      });
+
+      // Clean up deleted objects
+      for (const name in sceneObjects) {
+        if (!newKeys[name]) {
+          scene.remove(sceneObjects[name]);
+          delete sceneObjects[name];
+        }
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (controls) controls.update();
+      if (renderer && scene && camera) renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+      const container = document.getElementById('canvas-container');
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    }
+
+    // API interactions
+    async function fetchState() {
+      try {
+        const res = await fetch('/api/sim/state');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update UI panels
+        document.getElementById('arm-mode-badge').innerText = `MODE: ${data.mode.toUpperCase()}`;
+        document.getElementById('val-gripper').innerText = data.gripperState;
+        document.getElementById('val-error').innerText = data.errorCode;
+
+        // Emergency Stop UI
+        const banner = document.getElementById('emergency-banner');
+        if (data.errorCode === 99) {
+          banner.classList.remove('hidden');
+          document.getElementById('val-error').classList.add('text-red-400');
+        } else {
+          banner.classList.add('hidden');
+          document.getElementById('val-error').classList.remove('text-red-400');
+        }
+
+        if (data.errorCode > 0) {
+          document.getElementById('error-desc-box').classList.remove('hidden');
+          document.getElementById('val-error-msg').innerText = data.errorMessage || 'Unknown error';
+        } else {
+          document.getElementById('error-desc-box').classList.add('hidden');
+        }
+
+        if (data.tcpPose) {
+          document.getElementById('val-tcp').innerText = 
+            `[X:${data.tcpPose[0].toFixed(1)}, Y:${data.tcpPose[1].toFixed(1)}, Z:${data.tcpPose[2].toFixed(1)}]`;
+        }
+        if (data.jointPose) {
+          document.getElementById('val-joints').innerText = 
+            `[${data.jointPose.map(j => j.toFixed(0)).join(', ')}]`;
+        }
+
+        // Draw objects list in sidebar
+        const listDiv = document.getElementById('objects-list');
+        if (data.objects && data.objects.length > 0) {
+          listDiv.innerHTML = data.objects.map(obj => `
+            <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
+              <div class="flex items-center space-x-2">
+                <span class="inline-block w-3 h-3 rounded-full border border-white/20" style="background-color: ${obj.color}"></span>
+                <span class="font-medium text-slate-300">${obj.name}</span>
+              </div>
+              <div class="text-right">
+                <span class="font-mono text-slate-400">[${obj.position.map(p => p.toFixed(0)).join(',')}]</span>
+                <span class="ml-2 font-semibold ${obj.grasped ? 'text-indigo-400' : 'text-slate-500'}">
+                  ${obj.grasped ? 'Grasped' : 'Free'}
+                </span>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          listDiv.innerHTML = `<div class="text-xs text-slate-500 italic">No objects registered</div>`;
+        }
+
+        // Update 3D renders
+        updateArmJoints(data.jointPose);
+        updateGripperMesh(data.gripperState);
+        drawSlots(data.slots);
+        drawObjects(data.objects);
+
+      } catch (err) {
+        console.error("failed to poll sim state", err);
+      }
+    }
+
+    async function resetSimulation() {
+      try {
+        const res = await fetch('/api/sim/reset', { method: 'POST' });
+        if (res.ok) {
+          appendLog("Simulation state reset to default values.");
+          fetchState();
+        } else {
+          appendLog("Failed to reset simulation.");
+        }
+      } catch (err) {
+        appendLog(`Error resetting simulation: ${err.message}`);
+      }
+    }
+
+    async function runSelectedScenario() {
+      const selector = document.getElementById('scenario-selector');
+      const filename = selector.value;
+      
+      appendLog(`Starting scenario check: ${filename}...`);
+      
+      try {
+        const res = await fetch('/api/sim/scenarios/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scenario: filename })
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+          appendLog(`✅ SCENARIO PASSED: ${filename}`);
+        } else {
+          appendLog(`❌ SCENARIO FAILED: ${data.error || 'Unknown evaluation failure'}`);
+        }
+        
+        fetchState();
+      } catch (err) {
+        appendLog(`❌ SCENARIO CRITICAL ERROR: ${err.message}`);
+      }
+    }
+
+    function appendLog(msg) {
+      const logDiv = document.getElementById('scenario-log');
+      const timestamp = new Date().toLocaleTimeString();
+      const newMsg = `[${timestamp}] ${msg}`;
+      
+      if (logDiv.innerHTML.includes("Console ready")) {
+        logDiv.innerHTML = "";
+      }
+      
+      const line = document.createElement('div');
+      line.innerText = newMsg;
+      if (msg.includes("PASSED") || msg.includes("reset")) {
+        line.className = "text-emerald-400";
+      } else if (msg.includes("FAILED") || msg.includes("ERROR")) {
+        line.className = "text-red-400";
+      } else {
+        line.className = "text-slate-300";
+      }
+      logDiv.appendChild(line);
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // Init & Poll loop
+    init3D();
+    fetchState();
+    setInterval(fetchState, 200);
+
+  </script>
+</body>
+</html>

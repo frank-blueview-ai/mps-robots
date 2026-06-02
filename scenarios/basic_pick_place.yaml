@@ -1,0 +1,40 @@
+name: basic_pick_place
+description: "Pick a red cube from slot 1 and place it in slot 2"
+initial_state:
+  pose: [180.0, 0.0, 120.0, 180.0, 0.0, 0.0]
+  gripper: "open"
+  error_code: 0
+  objects:
+    - name: "red_cube"
+      color: "#ef4444"
+      shape: "cube"
+      position: [200.0, -100.0, 15.0]
+      size: [30.0, 30.0, 30.0]
+      grasped: false
+  slots:
+    - name: "slot1"
+      position: [200.0, -100.0, 20.0]
+    - name: "slot2"
+      position: [200.0, 100.0, 20.0]
+user_instruction: "Pick the red cube from slot1 and place it in slot2"
+steps:
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "pick_from_known_slot"
+    expected_status: "success"
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "place_at_known_slot"
+    expected_status: "success"
+expected_final_state:
+  pose: [200.0, 100.0, 80.0]
+  gripper: "open"
+  error_code: 0
+  objects:
+    - name: "red_cube"
+      color: "#ef4444"
+      shape: "cube"
+      position: [200.0, 100.0, 15.0]
+      size: [30.0, 30.0, 30.0]
+      grasped: false
+confirmation_required: true

@@ -23,16 +23,16 @@ if (-not (Test-Path -LiteralPath $nginxExe)) {
 
 & $nginxExe -p "$nginxRoot\" -c $configPath -t
 
-$existingListener = Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue |
+$existingListener = Get-NetTCPConnection -LocalPort 8081 -ErrorAction SilentlyContinue |
     Where-Object { $_.State -eq "Listen" } |
     Select-Object -First 1
 
 if ($existingListener) {
-    Write-Host "NGINX is already serving ORA controls at http://localhost:8080"
+    Write-Host "NGINX is already serving ORA controls at http://localhost:8081"
     return
 }
 
 Start-Process -FilePath $nginxExe -ArgumentList @("-p", "$nginxRoot\", "-c", $configPath) -WindowStyle Hidden
 Start-Sleep -Seconds 1
 
-Write-Host "NGINX serving ORA controls at http://localhost:8080"
+Write-Host "NGINX serving ORA controls at http://localhost:8081"

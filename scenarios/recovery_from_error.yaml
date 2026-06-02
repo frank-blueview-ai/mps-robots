@@ -1,0 +1,27 @@
+name: recovery_from_error
+description: "Verify rejection of motions in error state, recovery via reset, then homing"
+initial_state:
+  pose: [180.0, 0.0, 120.0, 180.0, 0.0, 0.0]
+  gripper: "open"
+  error_code: 5
+  error_message: "Joint 3 overheat"
+  objects: []
+user_instruction: "Home the arm after recovering from error state"
+steps:
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "home"
+    expected_status: "error"
+  - tool: "reset"
+    args: {}
+    expected_status: "success"
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "home"
+    expected_status: "success"
+expected_final_state:
+  pose: [180.0, 0.0, 120.0]
+  gripper: "open"
+  error_code: 0
+  objects: []
+confirmation_required: true

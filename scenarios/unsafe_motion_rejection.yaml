@@ -1,0 +1,27 @@
+name: unsafe_motion_rejection
+description: "Verify that unsafe motions outside safety limits are rejected"
+initial_state:
+  pose: [180.0, 0.0, 120.0, 180.0, 0.0, 0.0]
+  gripper: "open"
+  error_code: 0
+  objects: []
+user_instruction: "Move to x=50, y=0, z=100 which is out of bounds"
+steps:
+  - tool: "move_to_safe_pose"
+    args:
+      x: 50.0
+      y: 0.0
+      z: 100.0
+    expected_status: "rejected"
+  - tool: "move_to_safe_pose"
+    args:
+      x: 200.0
+      y: 300.0
+      z: 100.0
+    expected_status: "rejected"
+expected_final_state:
+  pose: [180.0, 0.0, 120.0]
+  gripper: "open"
+  error_code: 101
+  objects: []
+confirmation_required: true

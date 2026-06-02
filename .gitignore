@@ -1,6 +1,7 @@
 .venv/
 .env
 node_modules/
+frontend/dist/
 runtime/
 test-results/
 playwright-report/

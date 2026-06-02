@@ -1,0 +1,35 @@
+name: gripper_test
+description: "Close and open the gripper to test grasping behavior"
+initial_state:
+  pose: [200.0, -100.0, 25.0, 180.0, 0.0, 0.0]
+  gripper: "open"
+  error_code: 0
+  objects:
+    - name: "red_cube"
+      color: "#ef4444"
+      shape: "cube"
+      position: [200.0, -100.0, 15.0]
+      size: [30.0, 30.0, 30.0]
+      grasped: false
+user_instruction: "Close the gripper to grasp the cube, then open it again"
+steps:
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "close_gripper"
+    expected_status: "success"
+  - tool: "execute_named_skill"
+    args:
+      skill_name: "open_gripper"
+    expected_status: "success"
+expected_final_state:
+  pose: [200.0, -100.0, 25.0]
+  gripper: "open"
+  error_code: 0
+  objects:
+    - name: "red_cube"
+      color: "#ef4444"
+      shape: "cube"
+      position: [200.0, -100.0, 15.0]
+      size: [30.0, 30.0, 30.0]
+      grasped: false
+confirmation_required: false

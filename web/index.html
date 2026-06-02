@@ -24,6 +24,112 @@
           </div>
         </header>
 
+        <section class="project-panel" aria-label="Student project">
+          <div class="project-editor">
+            <div class="field-grid">
+              <label>
+                <span>Project</span>
+                <input id="project-title" type="text" autocomplete="off" placeholder="Untitled Project">
+              </label>
+              <label>
+                <span>Student</span>
+                <input id="project-owner" type="text" autocomplete="off" placeholder="Student name">
+              </label>
+            </div>
+
+            <label class="python-field">
+              <span>Python draft</span>
+              <textarea id="project-python" rows="5" spellcheck="false" placeholder="# Python preview and editable code will appear here"></textarea>
+            </label>
+
+            <div class="project-actions">
+              <button id="new-project-btn" type="button">New</button>
+              <button id="save-project-btn" type="button">Save</button>
+              <button id="duplicate-project-btn" type="button" disabled>Duplicate</button>
+              <button id="export-project-btn" type="button" disabled>Export</button>
+              <button id="import-project-btn" type="button">Import</button>
+              <button id="delete-project-btn" class="danger secondary-danger" type="button" disabled>Delete</button>
+              <input id="project-import-file" type="file" accept="application/json,.json" hidden>
+            </div>
+
+            <p id="project-status" class="project-status">No project loaded</p>
+          </div>
+
+          <div class="project-browser">
+            <div class="project-browser-header">
+              <h2>Saved Projects</h2>
+              <button id="refresh-projects-btn" type="button">Refresh</button>
+            </div>
+            <div id="project-list" class="project-list" role="list" aria-label="Saved projects"></div>
+          </div>
+        </section>
+
+        <section class="admin-panel" aria-label="Classroom admin">
+          <div class="admin-section">
+            <div class="project-browser-header">
+              <h2>User Profiles</h2>
+              <button id="refresh-users-btn" type="button">Refresh</button>
+            </div>
+
+            <div class="field-grid">
+              <label>
+                <span>Profile name</span>
+                <input id="user-display-name" type="text" autocomplete="off" placeholder="Student or teacher name">
+              </label>
+              <label>
+                <span>Role</span>
+                <select id="user-role">
+                  <option value="student">Student author</option>
+                  <option value="operator">Selected student operator</option>
+                  <option value="teacher">Teacher</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            </div>
+
+            <label>
+              <span>Email</span>
+              <input id="user-email" type="email" autocomplete="off" placeholder="optional">
+            </label>
+
+            <div class="project-actions">
+              <button id="save-user-btn" type="button">Add Profile</button>
+              <button id="clear-user-btn" type="button">Clear</button>
+              <button id="delete-user-btn" class="danger secondary-danger" type="button" disabled>Delete Profile</button>
+            </div>
+
+            <p id="user-status" class="project-status">No profile selected</p>
+            <div id="user-list" class="project-list compact-list" role="list" aria-label="User profiles"></div>
+          </div>
+
+          <div class="admin-section">
+            <div class="project-browser-header">
+              <h2>Classes</h2>
+              <button id="refresh-classes-btn" type="button">Refresh</button>
+            </div>
+
+            <div class="field-grid">
+              <label>
+                <span>Class name</span>
+                <input id="class-name" type="text" autocomplete="off" placeholder="Robotics 1">
+              </label>
+              <label>
+                <span>Term</span>
+                <input id="class-term" type="text" autocomplete="off" placeholder="2026">
+              </label>
+            </div>
+
+            <div class="project-actions">
+              <button id="save-class-btn" type="button">Add Class</button>
+              <button id="clear-class-btn" type="button">Clear</button>
+              <button id="delete-class-btn" class="danger secondary-danger" type="button" disabled>Delete Class</button>
+            </div>
+
+            <p id="class-status" class="project-status">No class selected</p>
+            <div id="class-list" class="project-list compact-list" role="list" aria-label="Classes"></div>
+          </div>
+        </section>
+
         <div class="workspace">
           <div class="joystick-panel">
             <div id="joystick-zone" aria-label="XY joystick"></div>

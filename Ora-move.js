@@ -16,6 +16,12 @@ const API = {
   gripper: "/gripper",
 };
 
+const APP_API = {
+  projects: "/api/projects",
+  users: "/api/users",
+  classes: "/api/classes",
+};
+
 const MOVE_THROTTLE_MS = 100;
 const STEP_ONLINE_MS = 180;
 const CLIENT_TIMEOUT_MS = {
@@ -35,6 +41,11 @@ let verticalTimer = null;
 let activeStepDirection = null;
 let lastVector = { x: 0, y: 0 };
 let liveControlEnabled = false;
+let currentProject = null;
+let currentUser = null;
+let currentClass = null;
+let projectStorageAvailable = false;
+let classroomStorageAvailable = false;
 
 const state = {
   connected: false,
@@ -137,6 +148,28 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
   }
 }
 
+async function appRequest(path, options = {}, timeoutMs = 10000) {
+  const response = await fetchWithTimeout(path, {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  }, timeoutMs);
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      message = body.error || message;
+    } catch {}
+    throw new Error(message);
+  }
+
+  if (response.status === 204) return null;
+  return await response.json();
+}
+
 async function sendCommand(action, params = {}) {
   const path = API[action];
   if (!path) {
@@ -185,6 +218,497 @@ async function sendCommand(action, params = {}) {
     const message = error.name === "AbortError" ? `${action} timed out` : error.message || "ORA command failed";
     updateStatus(state.connected, message);
     throw error;
+  }
+}
+
+function setProjectStatus(message) {
+  setText("project-status", message);
+}
+
+function projectSummary(project) {
+  if (!project) return "No project loaded";
+  const updated = project.updatedAt ? new Date(project.updatedAt).toLocaleString() : "not saved";
+  return `${project.title || "Untitled Project"} saved ${updated}`;
+}
+
+function setProjectForm(project) {
+  currentProject = project;
+  $("project-title").value = project?.title || "";
+  $("project-owner").value = project?.owner || "";
+  $("project-python").value = project?.python || "";
+  updateProjectControls();
+  setProjectStatus(projectSummary(project));
+}
+
+function collectProjectPayload() {
+  return {
+    title: $("project-title").value.trim() || "Untitled Project",
+    owner: $("project-owner").value.trim(),
+    mode: "blocks-and-python",
+    blockly: currentProject?.blockly || { workspaceVersion: 1, blocks: [] },
+    python: $("project-python").value,
+    generatedPython: currentProject?.generatedPython || "",
+    safetyProfileId: currentProject?.safetyProfileId || "pilot-default",
+    metadata: {
+      savedFrom: "local-controller",
+      lastManualCommand: state.lastCommand,
+    },
+  };
+}
+
+function updateProjectControls() {
+  const hasProject = Boolean(currentProject?.id);
+  ["duplicate-project-btn", "export-project-btn", "delete-project-btn"].forEach((id) => {
+    const element = $(id);
+    if (element) element.disabled = !hasProject || !projectStorageAvailable;
+  });
+
+  $("save-project-btn").disabled = !projectStorageAvailable;
+}
+
+function renderProjectList(projects) {
+  const list = $("project-list");
+  list.innerHTML = "";
+
+  if (!projectStorageAvailable) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "Start the Go server to use project storage.";
+    list.appendChild(item);
+    return;
+  }
+
+  if (!projects.length) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "No saved projects";
+    list.appendChild(item);
+    return;
+  }
+
+  projects.forEach((project) => {
+    const row = document.createElement("div");
+    row.setAttribute("role", "listitem");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-item";
+    if (project.id === currentProject?.id) button.classList.add("active");
+
+    const title = document.createElement("span");
+    title.className = "project-item-title";
+    title.textContent = project.title || "Untitled Project";
+
+    const meta = document.createElement("span");
+    meta.className = "project-item-meta";
+    const owner = project.owner ? `${project.owner} · ` : "";
+    const updated = project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : "unsaved";
+    meta.textContent = `${owner}${updated}`;
+
+    button.append(title, meta);
+    button.addEventListener("click", () => openProject(project.id));
+    row.appendChild(button);
+    list.appendChild(row);
+  });
+}
+
+async function loadProjects() {
+  try {
+    const projects = await appRequest(APP_API.projects, { method: "GET" });
+    projectStorageAvailable = true;
+    renderProjectList(projects);
+    updateProjectControls();
+    if (!currentProject) setProjectStatus("Ready");
+  } catch {
+    projectStorageAvailable = false;
+    renderProjectList([]);
+    updateProjectControls();
+    setProjectStatus("Project storage unavailable");
+  }
+}
+
+async function openProject(id) {
+  try {
+    const project = await appRequest(`${APP_API.projects}/${encodeURIComponent(id)}`, { method: "GET" });
+    setProjectForm(project);
+    await loadProjects();
+  } catch (error) {
+    setProjectStatus(error.message || "Could not open project");
+  }
+}
+
+async function saveProject() {
+  if (!projectStorageAvailable) {
+    setProjectStatus("Project storage unavailable");
+    return;
+  }
+
+  try {
+    const payload = collectProjectPayload();
+    const path = currentProject?.id ? `${APP_API.projects}/${encodeURIComponent(currentProject.id)}` : APP_API.projects;
+    const method = currentProject?.id ? "PUT" : "POST";
+    const project = await appRequest(path, {
+      method,
+      body: JSON.stringify(payload),
+    });
+    setProjectForm(project);
+    await loadProjects();
+  } catch (error) {
+    setProjectStatus(error.message || "Could not save project");
+  }
+}
+
+function newProject() {
+  currentProject = null;
+  $("project-title").value = "";
+  $("project-owner").value = "";
+  $("project-python").value = "";
+  updateProjectControls();
+  setProjectStatus(projectStorageAvailable ? "New project" : "Project storage unavailable");
+  loadProjects();
+}
+
+async function duplicateProject() {
+  if (!currentProject?.id || !projectStorageAvailable) return;
+
+  try {
+    const payload = collectProjectPayload();
+    payload.title = `Copy of ${payload.title}`;
+    const project = await appRequest(APP_API.projects, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setProjectForm(project);
+    await loadProjects();
+  } catch (error) {
+    setProjectStatus(error.message || "Could not duplicate project");
+  }
+}
+
+async function deleteProject() {
+  if (!currentProject?.id || !projectStorageAvailable) return;
+  if (!window.confirm(`Delete "${currentProject.title || "Untitled Project"}"?`)) return;
+
+  try {
+    await appRequest(`${APP_API.projects}/${encodeURIComponent(currentProject.id)}`, { method: "DELETE" });
+    newProject();
+    await loadProjects();
+    setProjectStatus("Project deleted");
+  } catch (error) {
+    setProjectStatus(error.message || "Could not delete project");
+  }
+}
+
+function exportProject() {
+  if (!currentProject?.id) return;
+
+  const filename = `${(currentProject.title || "ora-project").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || "ora-project"}.json`;
+  const blob = new Blob([JSON.stringify(currentProject, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setProjectStatus("Project exported");
+}
+
+function importProject() {
+  $("project-import-file").click();
+}
+
+async function handleProjectImport(event) {
+  const [file] = event.target.files || [];
+  event.target.value = "";
+  if (!file || !projectStorageAvailable) return;
+
+  try {
+    const text = await file.text();
+    const project = JSON.parse(text);
+    const payload = {
+      ...project,
+      id: undefined,
+      title: project.title ? `Imported ${project.title}` : "Imported Project",
+    };
+    const saved = await appRequest(APP_API.projects, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setProjectForm(saved);
+    await loadProjects();
+  } catch (error) {
+    setProjectStatus(error.message || "Could not import project");
+  }
+}
+
+function setUserStatus(message) {
+  setText("user-status", message);
+}
+
+function setClassStatus(message) {
+  setText("class-status", message);
+}
+
+function roleLabel(role) {
+  return {
+    admin: "Admin",
+    teacher: "Teacher",
+    student: "Student author",
+    operator: "Selected student operator",
+  }[role] || role || "Student author";
+}
+
+function setUserForm(user) {
+  currentUser = user;
+  $("user-display-name").value = user?.displayName || "";
+  $("user-role").value = user?.role || "student";
+  $("user-email").value = user?.email || "";
+  updateClassroomControls();
+  setUserStatus(user ? `${user.displayName} selected` : "No profile selected");
+}
+
+function setClassForm(classProfile) {
+  currentClass = classProfile;
+  $("class-name").value = classProfile?.name || "";
+  $("class-term").value = classProfile?.term || "";
+  updateClassroomControls();
+  setClassStatus(classProfile ? `${classProfile.name} selected` : "No class selected");
+}
+
+function updateClassroomControls() {
+  $("save-user-btn").disabled = !classroomStorageAvailable;
+  $("save-class-btn").disabled = !classroomStorageAvailable;
+  $("delete-user-btn").disabled = !classroomStorageAvailable || !currentUser?.id || currentUser.id === "station-admin";
+  $("delete-class-btn").disabled = !classroomStorageAvailable || !currentClass?.id;
+  $("save-user-btn").textContent = currentUser?.id ? "Update Profile" : "Add Profile";
+  $("save-class-btn").textContent = currentClass?.id ? "Update Class" : "Add Class";
+}
+
+function renderUsers(users) {
+  const list = $("user-list");
+  list.innerHTML = "";
+
+  if (!classroomStorageAvailable) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "Start the Go server to manage profiles.";
+    list.appendChild(item);
+    return;
+  }
+
+  if (!users.length) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "No profiles";
+    list.appendChild(item);
+    return;
+  }
+
+  users.forEach((user) => {
+    const row = document.createElement("div");
+    row.setAttribute("role", "listitem");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-item";
+    if (user.id === currentUser?.id) button.classList.add("active");
+    if (!user.active) button.classList.add("inactive");
+
+    const title = document.createElement("span");
+    title.className = "project-item-title";
+    title.textContent = user.displayName || "Unnamed profile";
+
+    const meta = document.createElement("span");
+    meta.className = "project-item-meta";
+    const email = user.email ? ` · ${user.email}` : "";
+    meta.textContent = `${roleLabel(user.role)}${email}`;
+
+    button.append(title, meta);
+    button.addEventListener("click", () => setUserForm(user));
+    row.appendChild(button);
+    list.appendChild(row);
+  });
+}
+
+function renderClasses(classes) {
+  const list = $("class-list");
+  list.innerHTML = "";
+
+  if (!classroomStorageAvailable) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "Start the Go server to manage classes.";
+    list.appendChild(item);
+    return;
+  }
+
+  if (!classes.length) {
+    const item = document.createElement("p");
+    item.className = "project-status";
+    item.textContent = "No classes";
+    list.appendChild(item);
+    return;
+  }
+
+  classes.forEach((classProfile) => {
+    const row = document.createElement("div");
+    row.setAttribute("role", "listitem");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-item";
+    if (classProfile.id === currentClass?.id) button.classList.add("active");
+
+    const title = document.createElement("span");
+    title.className = "project-item-title";
+    title.textContent = classProfile.name || "Unnamed class";
+
+    const meta = document.createElement("span");
+    meta.className = "project-item-meta";
+    meta.textContent = classProfile.term || "No term";
+
+    button.append(title, meta);
+    button.addEventListener("click", () => setClassForm(classProfile));
+    row.appendChild(button);
+    list.appendChild(row);
+  });
+}
+
+async function loadUsers() {
+  try {
+    const users = await appRequest(APP_API.users, { method: "GET" });
+    classroomStorageAvailable = true;
+    renderUsers(users);
+    updateClassroomControls();
+    if (!currentUser) setUserStatus("Ready");
+  } catch {
+    classroomStorageAvailable = false;
+    renderUsers([]);
+    updateClassroomControls();
+    setUserStatus("Profile storage unavailable");
+  }
+}
+
+async function loadClasses() {
+  try {
+    const classes = await appRequest(APP_API.classes, { method: "GET" });
+    classroomStorageAvailable = true;
+    renderClasses(classes);
+    updateClassroomControls();
+    if (!currentClass) setClassStatus("Ready");
+  } catch {
+    classroomStorageAvailable = false;
+    renderClasses([]);
+    updateClassroomControls();
+    setClassStatus("Class storage unavailable");
+  }
+}
+
+async function loadClassroomAdmin() {
+  await Promise.all([loadUsers(), loadClasses()]);
+}
+
+function clearUserForm() {
+  setUserForm(null);
+  loadUsers();
+}
+
+function clearClassForm() {
+  setClassForm(null);
+  loadClasses();
+}
+
+async function saveUser() {
+  if (!classroomStorageAvailable) {
+    setUserStatus("Profile storage unavailable");
+    return;
+  }
+
+  const payload = {
+    displayName: $("user-display-name").value.trim(),
+    role: $("user-role").value,
+    email: $("user-email").value.trim(),
+    active: true,
+  };
+
+  if (!payload.displayName) {
+    setUserStatus("Profile name is required");
+    return;
+  }
+
+  try {
+    const path = currentUser?.id ? `${APP_API.users}/${encodeURIComponent(currentUser.id)}` : APP_API.users;
+    const method = currentUser?.id ? "PUT" : "POST";
+    const saved = await appRequest(path, {
+      method,
+      body: JSON.stringify(payload),
+    });
+    setUserForm(saved);
+    await loadUsers();
+    setUserStatus(`${saved.displayName} saved`);
+  } catch (error) {
+    setUserStatus(error.message || "Could not save profile");
+  }
+}
+
+async function deleteUser() {
+  if (!currentUser?.id || currentUser.id === "station-admin") return;
+  if (!window.confirm(`Delete profile "${currentUser.displayName}"?`)) return;
+
+  try {
+    await appRequest(`${APP_API.users}/${encodeURIComponent(currentUser.id)}`, { method: "DELETE" });
+    setUserForm(null);
+    await loadUsers();
+    setUserStatus("Profile deleted");
+  } catch (error) {
+    setUserStatus(error.message || "Could not delete profile");
+  }
+}
+
+async function saveClassProfile() {
+  if (!classroomStorageAvailable) {
+    setClassStatus("Class storage unavailable");
+    return;
+  }
+
+  const payload = {
+    name: $("class-name").value.trim(),
+    term: $("class-term").value.trim(),
+  };
+
+  if (!payload.name) {
+    setClassStatus("Class name is required");
+    return;
+  }
+
+  try {
+    const path = currentClass?.id ? `${APP_API.classes}/${encodeURIComponent(currentClass.id)}` : APP_API.classes;
+    const method = currentClass?.id ? "PUT" : "POST";
+    const saved = await appRequest(path, {
+      method,
+      body: JSON.stringify(payload),
+    });
+    setClassForm(saved);
+    await loadClasses();
+    setClassStatus(`${saved.name} saved`);
+  } catch (error) {
+    setClassStatus(error.message || "Could not save class");
+  }
+}
+
+async function deleteClassProfile() {
+  if (!currentClass?.id) return;
+  if (!window.confirm(`Delete class "${currentClass.name}"?`)) return;
+
+  try {
+    await appRequest(`${APP_API.classes}/${encodeURIComponent(currentClass.id)}`, { method: "DELETE" });
+    setClassForm(null);
+    await loadClasses();
+    setClassStatus("Class deleted");
+  } catch (error) {
+    setClassStatus(error.message || "Could not delete class");
   }
 }
 
@@ -418,12 +942,34 @@ function init() {
   $("grip-btn").addEventListener("click", toggleGripper);
   $("connect-btn").addEventListener("click", checkStatus);
 
+  $("new-project-btn").addEventListener("click", newProject);
+  $("save-project-btn").addEventListener("click", saveProject);
+  $("duplicate-project-btn").addEventListener("click", duplicateProject);
+  $("export-project-btn").addEventListener("click", exportProject);
+  $("import-project-btn").addEventListener("click", importProject);
+  $("delete-project-btn").addEventListener("click", deleteProject);
+  $("refresh-projects-btn").addEventListener("click", loadProjects);
+  $("project-import-file").addEventListener("change", handleProjectImport);
+
+  $("save-user-btn").addEventListener("click", saveUser);
+  $("clear-user-btn").addEventListener("click", clearUserForm);
+  $("delete-user-btn").addEventListener("click", deleteUser);
+  $("refresh-users-btn").addEventListener("click", loadUsers);
+  $("save-class-btn").addEventListener("click", saveClassProfile);
+  $("clear-class-btn").addEventListener("click", clearClassForm);
+  $("delete-class-btn").addEventListener("click", deleteClassProfile);
+  $("refresh-classes-btn").addEventListener("click", loadClasses);
+
   bindHoldButton("z-up-btn", 1);
   bindHoldButton("z-down-btn", -1);
 
   drawArmPreview(0, 0);
   setMotionControlsEnabled(false);
+  updateProjectControls();
+  updateClassroomControls();
   initJoystick();
+  loadProjects();
+  loadClassroomAdmin();
   checkStatus();
   setInterval(checkStatus, 5000);
 }

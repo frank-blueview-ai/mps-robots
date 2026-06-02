@@ -5,6 +5,7 @@ const ORA_NAME = process.env.ORA_NAME;
 const ORA_PASSWORD = process.env.ORA_PASSWORD;
 const PORT = Number(process.env.ORA_BRIDGE_PORT || 8787);
 const HEADLESS = process.env.ORA_BRIDGE_HEADLESS !== "false";
+const ORA_HOME_JOINTS = [0, 0, 0, 0, 0, 0];
 
 if (!ORA_NAME || !ORA_PASSWORD) {
   console.error("Set ORA_NAME and ORA_PASSWORD before starting the bridge.");
@@ -90,10 +91,17 @@ async function installOraChannelHook(targetPage) {
         });
       },
       getStatus() {
+        const channelStates = {};
+        for (const [label, channel] of Object.entries(this.channels)) {
+          channelStates[label] = channel.readyState;
+        }
         return {
           connected: Boolean(this.channels.control && this.channels.control.readyState === "open"),
           latest: this.lastStatus,
           reports: Object.keys(this.reports),
+          channelStates,
+          lastSend: this.sends.at(-1),
+          lastReceive: this.receives.at(-1),
         };
       },
     };
@@ -207,7 +215,12 @@ async function bridgeStatus() {
 }
 
 async function command(cmd, data, timeoutMs) {
-  if (!connected) throw new Error("ORA bridge is not connected");
+  const status = await bridgeStatus();
+  if (!status.connected) {
+    connected = false;
+    throw new HttpError(503, "ORA control channel is not open", status);
+  }
+  connected = true;
   return await page.evaluate(
     ({ cmd, data, timeoutMs }) => window.__oraBridge.sendCommand(cmd, data, timeoutMs),
     { cmd, data, timeoutMs },
@@ -277,12 +290,23 @@ async function ensureRobotCanSetReady() {
   return status;
 }
 
-function homeJointPayload(status) {
-  const joints = status.xarm_initial_point;
-  if (!Array.isArray(joints) || joints.length < 6) {
-    throw new HttpError(409, "ORA initial joint position is not available");
-  }
+function homeJointPayload() {
+  return {
+    I: ORA_HOME_JOINTS[0],
+    J: ORA_HOME_JOINTS[1],
+    K: ORA_HOME_JOINTS[2],
+    L: ORA_HOME_JOINTS[3],
+    M: ORA_HOME_JOINTS[4],
+    N: ORA_HOME_JOINTS[5],
+    O: 0,
+    R: 0,
+    wait: true,
+    isControl: false,
+    isClickMove: false,
+  };
+}
 
+function jointMovePayload(joints) {
   return {
     I: Number(joints[0]),
     J: Number(joints[1]),
@@ -296,6 +320,26 @@ function homeJointPayload(status) {
     isControl: false,
     isClickMove: false,
   };
+}
+
+function jointStepPayload(status, body) {
+  const currentJoints = status.xarm_joint_pose;
+  if (!Array.isArray(currentJoints) || currentJoints.length < 6) {
+    throw new HttpError(409, "ORA joint pose is not available");
+  }
+
+  const jointIndex = Number(body.jointIndex);
+  const deltaDegrees = Number(body.deltaDegrees);
+  if (!Number.isInteger(jointIndex) || jointIndex < 0 || jointIndex > 5) {
+    throw new HttpError(400, "jointIndex must be 0 through 5");
+  }
+  if (!Number.isFinite(deltaDegrees) || Math.abs(deltaDegrees) > 15) {
+    throw new HttpError(400, "deltaDegrees must be between -15 and 15");
+  }
+
+  const joints = currentJoints.slice(0, 6).map(Number);
+  joints[jointIndex] = Number((joints[jointIndex] + deltaDegrees).toFixed(3));
+  return jointMovePayload(joints);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -329,6 +373,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/clear-error") {
+      const status = await latestRobotStatus();
+      if (!status.xarm_connected) {
+        throw new HttpError(409, "ORA arm is not connected");
+      }
+      json(res, 200, await command("xarm_clear_error_warn", { mode: 0 }, 10000));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/gripper") {
       await ensureRobotReady();
       const body = await readJson(req);
@@ -337,8 +390,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/home") {
+      await ensureRobotReady();
+      json(res, 200, await command("xarm_move_joint", homeJointPayload(), 60000));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/joint-step") {
       const status = await ensureRobotReady();
-      json(res, 200, await command("xarm_move_joint", homeJointPayload(status), 60000));
+      const body = await readJson(req);
+      json(res, 200, await command("xarm_move_joint", jointStepPayload(status, body), body.timeoutMs ?? 60000));
       return;
     }
 
@@ -348,8 +408,10 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, await command("xarm_move_step", {
         isLoop: Boolean(body.isLoop),
         direction: body.direction,
-        isMoveTool: false,
-      }, body.timeoutMs ?? 5000));
+        isMoveTool: Boolean(body.isMoveTool),
+        stepSize: body.stepSize,
+        speedScale: body.speedScale,
+      }, body.timeoutMs ?? 10000));
       return;
     }
 
