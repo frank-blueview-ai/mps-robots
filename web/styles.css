@@ -64,6 +64,41 @@ button:active {
   transform: translateY(1px);
 }
 
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text);
+  background: #151515;
+}
+
+select {
+  min-height: 42px;
+}
+
+textarea {
+  min-height: 112px;
+  resize: vertical;
+  font-family: Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+label span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .app-shell {
   min-height: 100vh;
   display: flex;
@@ -138,6 +173,138 @@ p {
 
 .status-disconnected {
   color: #ff8b85;
+}
+
+.project-panel {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(260px, 340px);
+  gap: 18px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-section {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.project-editor,
+.project-browser {
+  display: grid;
+  gap: 12px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 240px);
+  gap: 12px;
+}
+
+.python-field {
+  min-width: 0;
+}
+
+.project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.project-actions button {
+  min-height: 42px;
+  padding: 0 14px;
+}
+
+.secondary-danger {
+  background: #7d332f;
+}
+
+.project-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 13px;
+}
+
+.project-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.project-browser-header button {
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.project-list {
+  min-height: 190px;
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.compact-list {
+  min-height: 150px;
+  max-height: 230px;
+}
+
+.project-item {
+  width: 100%;
+  min-height: 56px;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  text-align: left;
+}
+
+.project-item.active {
+  border-color: var(--good);
+  background: #203229;
+}
+
+.project-item.inactive {
+  opacity: 0.62;
+}
+
+.project-item span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-item .project-item-title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.project-item .project-item-meta {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .workspace {
@@ -220,6 +387,8 @@ p {
   }
 
   .topbar,
+  .project-panel,
+  .admin-panel,
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -238,5 +407,9 @@ p {
 
   .action-grid {
     width: min(72vw, 320px);
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
   }
 }
